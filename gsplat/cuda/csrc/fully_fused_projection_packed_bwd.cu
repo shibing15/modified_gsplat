@@ -37,12 +37,14 @@ __global__ void fully_fused_projection_packed_bwd_kernel(
     const int64_t *__restrict__ gaussian_ids, // [nnz]
     const T *__restrict__ conics,             // [nnz, 3]
     const T *__restrict__ compensations,      // [nnz] optional
+    const T *__restrict__ randns,             // [nnz, 3]
     // grad outputs
     const T *__restrict__ v_means2d,       // [nnz, 2]
     const T *__restrict__ v_depths,        // [nnz]
     const T *__restrict__ v_normals,       // [nnz, 3] optional
     const T *__restrict__ v_conics,        // [nnz, 3]
     const T *__restrict__ v_compensations, // [nnz] optional
+    const T *__restrict__ v_samples,       // [nnz, 3]
     const bool sparse_grad, // whether the outputs are in COO format [nnz, ...]
     // grad inputs
     T *__restrict__ v_means,   // [N, 3] or [nnz, 3]
@@ -65,10 +67,12 @@ __global__ void fully_fused_projection_packed_bwd_kernel(
     Ks += cid * 9;
 
     conics += idx * 3;
+    randns += idx * 3;
 
     v_means2d += idx * 2;
     v_depths += idx;
     v_conics += idx * 3;
+    v_samples += idx * 3;
 
     // vjp: compute the inverse of the 2d covariance
     mat2<T> covar2d_inv = mat2<T>(conics[0], conics[1], conics[1], conics[2]);
@@ -117,6 +121,8 @@ __global__ void fully_fused_projection_packed_bwd_kernel(
             covars[4],
             covars[5] // 3rd column
         );
+        quat = glm::make_vec4(quats + gid * 4);
+        scale = glm::make_vec3(scales + gid * 3);
     } else {
         // if not then compute it from quaternions and scales
         quat = glm::make_vec4(quats + gid * 4);
@@ -178,6 +184,34 @@ __global__ void fully_fused_projection_packed_bwd_kernel(
     );
     covar_world_to_cam_vjp(R, covar, v_covar_c, v_R, v_covar);
 
+    // sample grad
+    vec3<T> v_scale_sample(0.f);
+    vec4<T> v_quat_sample(0.f);
+    vec3<T> v_sample = glm::make_vec3(v_samples);
+    vec3<T> randn = glm::make_vec3(randns);
+    v_mean += v_sample;
+    mat3<T> R_gs = quat_to_rotmat(quat);
+    // scale weigth to much to make splat too thin
+    v_scale_sample[0] += glm::dot(v_sample, R_gs[0] * randn[0]);
+    v_scale_sample[1] += glm::dot(v_sample, R_gs[1] * randn[1]);
+    v_scale_sample[2] += glm::dot(v_sample, R_gs[2] * randn[2]);
+    vec3<T> srandn = randn * scale;
+    mat3<T> v_R_gs = mat3<T>(
+        // First column
+        v_sample[0] * srandn[0],
+        v_sample[1] * srandn[0],
+        v_sample[2] * srandn[0],
+        // Second column
+        v_sample[0] * srandn[1],
+        v_sample[1] * srandn[1],
+        v_sample[2] * srandn[1],
+        // Third column
+        v_sample[0] * srandn[2],
+        v_sample[1] * srandn[2],
+        v_sample[2] * srandn[2]
+    );
+    quat_to_rotmat_vjp<T>(quat, v_R_gs, v_quat_sample);
+
     auto warp = cg::tiled_partition<32>(cg::this_thread_block());
     if (sparse_grad) {
         // write out results with sparse layout
@@ -209,13 +243,20 @@ __global__ void fully_fused_projection_packed_bwd_kernel(
             );
             v_quats += idx * 4;
             v_scales += idx * 3;
-            v_quats[0] = v_quat[0];
-            v_quats[1] = v_quat[1];
-            v_quats[2] = v_quat[2];
-            v_quats[3] = v_quat[3];
-            v_scales[0] = v_scale[0];
-            v_scales[1] = v_scale[1];
-            v_scales[2] = v_scale[2];
+            // v_quats[0] = v_quat[0];
+            // v_quats[1] = v_quat[1];
+            // v_quats[2] = v_quat[2];
+            // v_quats[3] = v_quat[3];
+            // v_scales[0] = v_scale[0];
+            // v_scales[1] = v_scale[1];
+            // v_scales[2] = v_scale[2];
+            v_quats[0] = v_quat[0] + v_quat_sample[0];
+            v_quats[1] = v_quat[1] + v_quat_sample[1];
+            v_quats[2] = v_quat[2] + v_quat_sample[2];
+            v_quats[3] = v_quat[3] + v_quat_sample[3];
+            v_scales[0] = v_scale[0] + v_scale_sample[0];
+            v_scales[1] = v_scale[1] + v_scale_sample[1];
+            v_scales[2] = v_scale[2] + v_scale_sample[2];
         }
     } else {
         // write out results with dense layout
@@ -256,6 +297,13 @@ __global__ void fully_fused_projection_packed_bwd_kernel(
             quat_scale_to_covar_vjp<T>(
                 quat, scale, rotmat, v_rotmat, v_covar, v_quat, v_scale
             );
+            v_quat[0] += v_quat_sample[0];
+            v_quat[1] += v_quat_sample[1];
+            v_quat[2] += v_quat_sample[2];
+            v_quat[3] += v_quat_sample[3];
+            v_scale[0] += v_scale_sample[0];
+            v_scale[1] += v_scale_sample[1];
+            v_scale[2] += v_scale_sample[2];
             warpSum(v_quat, warp_group_g);
             warpSum(v_scale, warp_group_g);
             if (warp_group_g.thread_rank() == 0) {
@@ -313,12 +361,14 @@ fully_fused_projection_packed_bwd_tensor(
     const torch::Tensor &gaussian_ids,                // [nnz]
     const torch::Tensor &conics,                      // [nnz, 3]
     const at::optional<torch::Tensor> &compensations, // [nnz] optional
+    const torch::Tensor &randns,                      // [nnz, 3]
     // grad outputs
     const torch::Tensor &v_means2d,                     // [nnz, 2]
     const torch::Tensor &v_depths,                      // [nnz]
     const at::optional<torch::Tensor> &v_normals,       // [C, N, 3]
     const torch::Tensor &v_conics,                      // [nnz, 3]
     const at::optional<torch::Tensor> &v_compensations, // [nnz] optional
+    const torch::Tensor &v_samples,                     // [nnz, 3]
     const bool viewmats_requires_grad,
     const bool sparse_grad
 ) {
@@ -352,6 +402,8 @@ fully_fused_projection_packed_bwd_tensor(
             quats.has_value(), "quats must be provided to calculate normals"
         );
     }
+    GSPLAT_CHECK_INPUT(randns);
+    GSPLAT_CHECK_INPUT(v_samples);
 
     uint32_t N = means.size(0);    // number of gaussians
     uint32_t C = viewmats.size(0); // number of cameras
@@ -407,6 +459,7 @@ fully_fused_projection_packed_bwd_tensor(
                 compensations.has_value()
                     ? compensations.value().data_ptr<float>()
                     : nullptr,
+                randns.data_ptr<float>(),
                 v_means2d.data_ptr<float>(),
                 v_depths.data_ptr<float>(),
                 v_normals.has_value() ? v_normals.value().data_ptr<float>()
@@ -415,6 +468,7 @@ fully_fused_projection_packed_bwd_tensor(
                 v_compensations.has_value()
                     ? v_compensations.value().data_ptr<float>()
                     : nullptr,
+                v_samples.data_ptr<float>(),
                 sparse_grad,
                 v_means.data_ptr<float>(),
                 covars.has_value() ? v_covars.data_ptr<float>() : nullptr,

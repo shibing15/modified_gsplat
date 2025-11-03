@@ -46,7 +46,9 @@ __global__ void fully_fused_projection_packed_fwd_kernel(
     T *__restrict__ depths,             // [nnz]
     T *__restrict__ normals,            // [nnz, 3] optional
     T *__restrict__ conics,             // [nnz, 3]
-    T *__restrict__ compensations       // [nnz] optional
+    T *__restrict__ compensations,       // [nnz] optional
+    T *__restrict__ randns,             // [nnz, 3]
+    T *__restrict__ samples            // [nnz, 3]
 ) {
     int32_t blocks_per_row = gridDim.x;
 
@@ -94,6 +96,7 @@ __global__ void fully_fused_projection_packed_fwd_kernel(
     mat3<T> rotmat;
     T compensation;
     T det;
+    mat3<T> RS_world;
     if (valid) {
         // transform Gaussian covariance to camera space
         mat3<T> covar;
@@ -111,6 +114,14 @@ __global__ void fully_fused_projection_packed_fwd_kernel(
                 covars[4],
                 covars[5] // 3rd column
             );
+            quats += col_idx * 4;
+            scales += col_idx * 3;
+            mat3<T> R = quat_to_rotmat<T>(glm::make_vec4(quats));
+            vec3<T> scale = glm::make_vec3(scales);
+            mat3<T> S = mat3<T>(
+                scale[0], 0.f, 0.f, 0.f, scale[1], 0.f, 0.f, 0.f, scale[2]
+            );
+            RS_world = R * S;
         } else {
             // if not then compute it from quaternions and scales
             quats += col_idx * 4;
@@ -122,6 +133,14 @@ __global__ void fully_fused_projection_packed_fwd_kernel(
                 &covar,
                 nullptr
             );
+
+            mat3<T> R = quat_to_rotmat<T>(glm::make_vec4(quats));
+            vec3<T> scale = glm::make_vec3(scales);
+            mat3<T> S = mat3<T>(
+                scale[0], 0.f, 0.f, 0.f, scale[1], 0.f, 0.f, 0.f, scale[2]
+            );
+            RS_world = R * S;
+
         }
         mat3<T> covar_c;
         covar_world_to_cam(R, covar, covar_c);
@@ -232,6 +251,14 @@ __global__ void fully_fused_projection_packed_fwd_kernel(
             if (compensations != nullptr) {
                 compensations[thread_data] = compensation;
             }
+            // sample point
+            vec3<T> sample = RS_world[0] * randns[thread_data * 3] +
+                             RS_world[1] * randns[thread_data * 3 + 1] +
+                             RS_world[2] * randns[thread_data * 3 + 2] +
+                             glm::make_vec3(means);
+            samples[thread_data * 3] = sample.x;
+            samples[thread_data * 3 + 1] = sample.y;
+            samples[thread_data * 3 + 2] = sample.z;
         }
         // lane 0 of the first block in each row writes the indptr
         if (threadIdx.x == 0 && block_col_idx == 0) {
@@ -246,6 +273,8 @@ __global__ void fully_fused_projection_packed_fwd_kernel(
 }
 
 std::tuple<
+    torch::Tensor,
+    torch::Tensor,
     torch::Tensor,
     torch::Tensor,
     torch::Tensor,
@@ -335,6 +364,8 @@ fully_fused_projection_packed_fwd_tensor(
                 nullptr,
                 nullptr,
                 nullptr,
+                nullptr,
+                nullptr,
                 nullptr
             );
         block_accum = torch::cumsum(block_cnts, 0, torch::kInt32);
@@ -357,6 +388,8 @@ fully_fused_projection_packed_fwd_tensor(
     }
     torch::Tensor conics = torch::empty({nnz, 3}, means.options());
     torch::Tensor compensations;
+    torch::Tensor randns = torch::randn({nnz, 3}, means.options());
+    torch::Tensor samples = torch::empty({nnz, 3}, means.options());
     if (calc_compensations) {
         // we dont want NaN to appear in this tensor, so we zero intialize it
         compensations = torch::zeros({nnz}, means.options());
@@ -390,7 +423,9 @@ fully_fused_projection_packed_fwd_tensor(
                 depths.data_ptr<float>(),
                 calc_normals ? normals.data_ptr<float>() : nullptr,
                 conics.data_ptr<float>(),
-                calc_compensations ? compensations.data_ptr<float>() : nullptr
+                calc_compensations ? compensations.data_ptr<float>() : nullptr,
+                randns.data_ptr<float>(),
+                samples.data_ptr<float>()
             );
     } else {
         indptr.fill_(0);
@@ -405,7 +440,9 @@ fully_fused_projection_packed_fwd_tensor(
         depths,
         normals,
         conics,
-        compensations
+        compensations,
+        randns,
+        samples
     );
 }
 

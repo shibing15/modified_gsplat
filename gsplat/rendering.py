@@ -322,6 +322,8 @@ def rasterization(
             normals,
             conics,
             compensations,
+            samples,
+            samples_weights
         ) = proj_results
         opacities = opacities[gaussian_ids]  # [nnz]
     else:
@@ -344,6 +346,8 @@ def rasterization(
             "depths": depths,
             "conics": conics,
             "opacities": opacities,
+            "samples": samples,
+            "samples_weights": samples_weights
         }
     )
 

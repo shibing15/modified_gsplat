@@ -1039,6 +1039,8 @@ class _FullyFusedProjectionPacked(torch.autograd.Function):
             normals,
             conics,
             compensations,
+            randns,
+            samples,
         ) = _make_lazy_cuda_func("fully_fused_projection_packed_fwd")(
             means,
             covars,  # optional
@@ -1071,6 +1073,7 @@ class _FullyFusedProjectionPacked(torch.autograd.Function):
             Ks,
             conics,
             compensations,
+            randns
         )
         ctx.width = width
         ctx.height = height
@@ -1079,6 +1082,8 @@ class _FullyFusedProjectionPacked(torch.autograd.Function):
         ctx.calc_compensations = calc_compensations
         ctx.calc_normals = calc_normals
         ctx.ortho = ortho
+
+        sample_weights = torch.exp(-0.5 * randns.square().sum(-1, True))
 
         return (
             camera_ids,
@@ -1089,6 +1094,8 @@ class _FullyFusedProjectionPacked(torch.autograd.Function):
             normals,
             conics,
             compensations,
+            samples,
+            sample_weights
         )
 
     @staticmethod
@@ -1102,6 +1109,8 @@ class _FullyFusedProjectionPacked(torch.autograd.Function):
         v_normals,
         v_conics,
         v_compensations,
+        v_samples,
+        v_sample_weights
     ):
         (
             camera_ids,
@@ -1114,6 +1123,7 @@ class _FullyFusedProjectionPacked(torch.autograd.Function):
             Ks,
             conics,
             compensations,
+            randns,
         ) = ctx.saved_tensors
         width = ctx.width
         height = ctx.height
@@ -1143,11 +1153,13 @@ class _FullyFusedProjectionPacked(torch.autograd.Function):
             gaussian_ids,
             conics,
             compensations,
+            randns,
             v_means2d.contiguous(),
             v_depths.contiguous(),
             v_normals,
             v_conics.contiguous(),
             v_compensations,
+            v_samples.contiguous(),
             ctx.needs_input_grad[4],  # viewmats_requires_grad
             sparse_grad,
         )

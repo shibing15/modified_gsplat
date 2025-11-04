@@ -416,6 +416,7 @@ def rasterize_to_pixels(
     conics: Tensor,  # [C, N, 3] or [nnz, 3]
     colors: Tensor,  # [C, N, channels] or [nnz, channels]
     opacities: Tensor,  # [C, N] or [nnz]
+    normals: Tensor,    # [nnz, 3]
     image_width: int,
     image_height: int,
     tile_size: int,
@@ -532,11 +533,12 @@ def rasterize_to_pixels(
         tile_width * tile_size >= image_width
     ), f"Assert Failed: {tile_width} * {tile_size} >= {image_width}"
 
-    render_colors, render_alphas, render_depths, visibilities = _RasterizeToPixels.apply(
+    render_colors, render_alphas, render_depths, render_normals, visibilities = _RasterizeToPixels.apply(
         means2d.contiguous(),
         conics.contiguous(),
         colors.contiguous(),
         opacities.contiguous(),
+        normals.contiguous(),
         backgrounds,
         masks,
         means2d_z,
@@ -550,7 +552,7 @@ def rasterize_to_pixels(
 
     if padded_channels > 0:
         render_colors = render_colors[..., :-padded_channels]
-    return render_colors, render_alphas, render_depths, visibilities
+    return render_colors, render_alphas, render_depths, render_normals, visibilities
 
 
 @torch.no_grad()
@@ -893,6 +895,7 @@ class _RasterizeToPixels(torch.autograd.Function):
         conics: Tensor,  # [C, N, 3]
         colors: Tensor,  # [C, N, D]
         opacities: Tensor,  # [C, N]
+        normals: Tensor,
         backgrounds: Tensor,  # [C, D], Optional
         masks: Tensor,  # [C, tile_height, tile_width], Optional
         means2d_z: Tensor, # [C, N] or [nnz] // [NEW] 常量每高斯深度（可为 nullptr）
@@ -903,13 +906,14 @@ class _RasterizeToPixels(torch.autograd.Function):
         flatten_ids: Tensor,  # [n_isects]
         absgrad: bool,
     ) -> Tuple[Tensor, Tensor]:
-        render_colors, render_alphas, render_depths, last_ids, visibilities = _make_lazy_cuda_func(
+        render_colors, render_alphas, render_depths, render_normals, last_ids, visibilities = _make_lazy_cuda_func(
             "rasterize_to_pixels_fwd"
         )(
             means2d,
             conics,
             colors,
             opacities,
+            normals,
             backgrounds,
             masks,
             means2d_z,
@@ -925,6 +929,7 @@ class _RasterizeToPixels(torch.autograd.Function):
             conics,
             colors,
             opacities,
+            normals,
             backgrounds,
             masks,
             isect_offsets,
@@ -940,7 +945,7 @@ class _RasterizeToPixels(torch.autograd.Function):
 
         # double to float
         render_alphas = render_alphas.float()
-        return render_colors, render_alphas, render_depths, visibilities
+        return render_colors, render_alphas, render_depths, render_normals, visibilities
 
     @staticmethod
     def backward(
@@ -948,6 +953,7 @@ class _RasterizeToPixels(torch.autograd.Function):
         v_render_colors: Tensor,  # [C, H, W, 3]
         v_render_alphas: Tensor,  # [C, H, W, 1]
         v_render_depths: Tensor,  # [C, H, W, 1]
+        v_render_normals: Tensor, # [C, H, W, 3]
         v_visibilities: None,
     ):
         (
@@ -955,6 +961,7 @@ class _RasterizeToPixels(torch.autograd.Function):
             conics,
             colors,
             opacities,
+            normals,
             backgrounds,
             masks,
             isect_offsets,
@@ -976,6 +983,7 @@ class _RasterizeToPixels(torch.autograd.Function):
             v_conics,
             v_colors,
             v_opacities,
+            v_normals,
             v_means2d_z,
         ) = _make_lazy_cuda_func("rasterize_to_pixels_bwd")(
             means2d,
@@ -995,6 +1003,7 @@ class _RasterizeToPixels(torch.autograd.Function):
             v_render_colors.contiguous(),
             v_render_alphas.contiguous(),
             v_render_depths,
+            v_render_normals.contiguous(),
             absgrad,
         )
 
@@ -1012,6 +1021,7 @@ class _RasterizeToPixels(torch.autograd.Function):
             v_conics,
             v_colors,
             v_opacities,
+            v_normals,
             v_backgrounds,
             None,
             v_means2d_z,

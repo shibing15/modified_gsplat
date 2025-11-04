@@ -24,6 +24,7 @@ __global__ void rasterize_to_pixels_bwd_kernel(
     const vec3<S> *__restrict__ conics,  // [C, N, 3] or [nnz, 3]
     const S *__restrict__ colors,      // [C, N, COLOR_DIM] or [nnz, COLOR_DIM]
     const S *__restrict__ opacities,   // [C, N] or [nnz]
+    const S *__restrict__ normals,     // [C, N, 3] or [nnz, 3]                  // The normals in camera space.
     const S *__restrict__ backgrounds, // [C, COLOR_DIM] or [nnz, COLOR_DIM]
     const bool *__restrict__ masks,    // [C, tile_height, tile_width]
     const S *__restrict__ means2d_z,        // [C, N] or [nnz]  // [NEW] 可为 nullptr
@@ -42,12 +43,14 @@ __global__ void rasterize_to_pixels_bwd_kernel(
                                            // COLOR_DIM]
     const S *__restrict__ v_render_alphas, // [C, image_height, image_width, 1]
     const S *__restrict__ v_render_depths,  // [C, H, W, 1]  // [NEW]深度图梯度（可为 nullptr）
+    const S *__restrict__ v_render_normals, // [C, image_height, image_width, 3]  // camera space normals
     // grad inputs
     vec2<S> *__restrict__ v_means2d_abs, // [C, N, 2] or [nnz, 2]
     vec2<S> *__restrict__ v_means2d,     // [C, N, 2] or [nnz, 2]
     vec3<S> *__restrict__ v_conics,      // [C, N, 3] or [nnz, 3]
     S *__restrict__ v_colors,   // [C, N, COLOR_DIM] or [nnz, COLOR_DIM]
     S *__restrict__ v_opacities, // [C, N] or [nnz]
+    S *__restrict__ v_normals,   // [C, N, 3] or [nnz, 3]
     S *__restrict__ v_means2d_z  // [C, N] or [nnz]  // [NEW] 对 means2d_z 的梯度（可为 nullptr）
 ) {
     auto block = cg::this_thread_block();
@@ -65,6 +68,7 @@ __global__ void rasterize_to_pixels_bwd_kernel(
     if (v_render_depths != nullptr) {                                // [NEW]
         v_render_depths += camera_id * image_height * image_width;   // [NEW]
     }
+    v_render_normals += camera_id * image_height * image_width * 3;
     if (backgrounds != nullptr) {
         backgrounds += camera_id * COLOR_DIM;
     }
@@ -108,6 +112,7 @@ __global__ void rasterize_to_pixels_bwd_kernel(
         );                                         // [block_size]
     S *rgbs_batch = (S *)&conic_batch[block_size]; // [block_size * COLOR_DIM]
     S *z_batch    = (S *)&rgbs_batch[block_size * COLOR_DIM];           // [block_size]  // [NEW]批内 z 缓冲
+    S *normals_batch = (S *)&rgbs_batch[block_size * COLOR_DIM]; // [block_size * 3]
 
 
     // this is the T AFTER the last gaussian in this pixel
@@ -116,6 +121,7 @@ __global__ void rasterize_to_pixels_bwd_kernel(
     // the contribution from gaussians behind the current one
     S buffer[COLOR_DIM] = {0.f};
     S buffer_depth = 0.f;                           // [NEW]深度的累积 buffer
+    S buffer_normals[3] = {0.f};
     // index of last gaussian to contribute to this pixel
     const int32_t bin_final = inside ? last_ids[pix_id] : 0;
 
@@ -127,6 +133,12 @@ __global__ void rasterize_to_pixels_bwd_kernel(
     }
     const S v_render_a = v_render_alphas[pix_id];
     const S v_render_d = (v_render_depths != nullptr) ? v_render_depths[pix_id] : (S)0; // [NEW]
+    S v_render_n[3];
+    // FETCH NORMAL GRADIENT (NORMALIZATION FOR 2DGS)
+    GSPLAT_PRAGMA_UNROLL
+    for (uint32_t k = 0; k < 3; ++k) {
+        v_render_n[k] = v_render_normals[pix_id * 3 + k];
+    }
 
     // collect and process batches of gaussians
     // each thread loads one gaussian at a time before rasterizing
@@ -156,6 +168,10 @@ __global__ void rasterize_to_pixels_bwd_kernel(
             GSPLAT_PRAGMA_UNROLL
             for (uint32_t k = 0; k < COLOR_DIM; ++k) {
                 rgbs_batch[tr * COLOR_DIM + k] = colors[g * COLOR_DIM + k];
+            }
+            GSPLAT_PRAGMA_UNROLL
+            for (uint32_t k = 0; k < 3; ++k) {
+                normals_batch[tr * 3 + k] = normals[g * 3 + k];
             }
             // ============================ [NEW - load per-Gaussian depth] ============================
             // 若 forward 传入了 means2d_z，则把该高斯的常量深度缓存到本批的 z_batch
@@ -205,6 +221,7 @@ __global__ void rasterize_to_pixels_bwd_kernel(
             vec2<S> v_xy_abs_local = {0.f, 0.f};
             S v_opacity_local = 0.f;
             S v_z_local = 0.f;                               // [NEW] 对 means2d_z 的局部梯度
+            S v_normal_local[3] = {0.f};
             // initialize everything to 0, only set if the lane is valid
             if (valid) {
                 // compute the current T for this gaussian
@@ -222,6 +239,15 @@ __global__ void rasterize_to_pixels_bwd_kernel(
                     v_alpha +=
                         (rgbs_batch[t * COLOR_DIM + k] * T - buffer[k] * ra) *
                         v_render_c[k];
+                }
+
+                // update v_normal for this gaussian
+                GSPLAT_PRAGMA_UNROLL
+                for (uint32_t k = 0; k < 3; ++k) {
+                    v_normal_local[k] = fac * v_render_n[k];
+                }
+                for (uint32_t k = 0; k < 3; ++k) {
+                    v_alpha += (normals_batch[t * 3 + k] * T - buffer_normals[k] * ra) * v_render_n[k];
                 }
 
                 v_alpha += T_final * ra * v_render_a;
@@ -267,8 +293,16 @@ __global__ void rasterize_to_pixels_bwd_kernel(
                     const S z = z_batch[t];                                  // [NEW]
                     buffer_depth += z * fac;                                 // [NEW]
                 }
+                /**
+                 * Update the cumulative "later" gaussian contributions, used in derivatives of output normals w.r.t. alphas
+                 */
+                GSPLAT_PRAGMA_UNROLL
+                for (uint32_t k = 0; k < 3; ++k) {
+                    buffer_normals[k] += normals_batch[t * 3 + k] * fac;
+                }
             }
             warpSum<COLOR_DIM, S>(v_rgb_local, warp);
+            warpSum<3, S>(v_normal_local, warp);
             warpSum<decltype(warp), S>(v_conic_local, warp);
             warpSum<decltype(warp), S>(v_xy_local, warp);
             if (v_means2d_abs != nullptr) {
@@ -305,6 +339,12 @@ __global__ void rasterize_to_pixels_bwd_kernel(
 
                 if (v_render_depths != nullptr && means2d_z != nullptr && v_means2d_z != nullptr) { // [NEW]
                     gpuAtomicAdd(v_means2d_z + g, v_z_local);}                                       // [NEW]
+
+                S *v_normal_ptr = (S *)(v_normals) + 3 * g;
+                GSPLAT_PRAGMA_UNROLL
+                for (uint32_t k = 0; k < 3; ++k) {
+                    gpuAtomicAdd(v_normal_ptr + k, v_normal_local[k]);
+                }
             }
         }
     }
@@ -317,6 +357,7 @@ std::tuple<
     torch::Tensor,  // v_conics
     torch::Tensor,  // v_colors
     torch::Tensor,  // v_opacities
+    torch::Tensor,  // v_normals
     torch::Tensor   // v_means2d_z (maybe empty)
 >
 call_kernel_with_dim(
@@ -325,6 +366,7 @@ call_kernel_with_dim(
     const torch::Tensor &conics,                    // [C, N, 3] or [nnz, 3]
     const torch::Tensor &colors,                    // [C, N, 3] or [nnz, 3]
     const torch::Tensor &opacities,                 // [C, N] or [nnz]
+    const torch::Tensor &normals,                   // [nnz, 3]
     const at::optional<torch::Tensor> &backgrounds, // [C, 3]
     const at::optional<torch::Tensor> &masks, // [C, tile_height, tile_width]
     const at::optional<torch::Tensor> &means2d_z,   // [C, N] or [nnz]  // [NEW]
@@ -342,6 +384,7 @@ call_kernel_with_dim(
     const torch::Tensor &v_render_colors, // [C, image_height, image_width, 3]
     const torch::Tensor &v_render_alphas, // [C, image_height, image_width, 1]
     const at::optional<torch::Tensor> &v_render_depths,   // [C, H, W, 1]  // [NEW]
+    const torch::Tensor &v_render_normals, // [C, image_height, image_width, 3]
     // options
     bool absgrad
 ) {
@@ -351,6 +394,7 @@ call_kernel_with_dim(
     GSPLAT_CHECK_INPUT(conics);
     GSPLAT_CHECK_INPUT(colors);
     GSPLAT_CHECK_INPUT(opacities);
+    GSPLAT_CHECK_INPUT(normals);
     GSPLAT_CHECK_INPUT(tile_offsets);
     GSPLAT_CHECK_INPUT(flatten_ids);
     GSPLAT_CHECK_INPUT(render_alphas);
@@ -369,6 +413,7 @@ call_kernel_with_dim(
     if (v_render_depths.has_value()) { 
         GSPLAT_CHECK_INPUT(v_render_depths.value()); 
     } // [NEW]
+    GSPLAT_CHECK_INPUT(v_render_normals);
 
     bool packed = means2d.dim() == 2;
 
@@ -388,6 +433,7 @@ call_kernel_with_dim(
     torch::Tensor v_conics = torch::zeros_like(conics);
     torch::Tensor v_colors = torch::zeros_like(colors);
     torch::Tensor v_opacities = torch::zeros_like(opacities);
+    torch::Tensor v_normals = torch::zeros_like(normals);
     torch::Tensor v_means2d_abs;
     if (absgrad) {
         v_means2d_abs = torch::zeros_like(means2d);
@@ -402,7 +448,7 @@ call_kernel_with_dim(
         const uint32_t shared_mem =
             tile_size * tile_size *
             (sizeof(int32_t) + sizeof(vec3<float>) + sizeof(vec3<float>) +
-             sizeof(float) * COLOR_DIM + sizeof(float)); // [NEW]
+             sizeof(float) * COLOR_DIM + sizeof(float) + sizeof(float) * 3); // [NEW]
         at::cuda::CUDAStream stream = at::cuda::getCurrentCUDAStream();
 
         if (cudaFuncSetAttribute(
@@ -426,6 +472,7 @@ call_kernel_with_dim(
                 reinterpret_cast<vec3<float> *>(conics.data_ptr<float>()),
                 colors.data_ptr<float>(),
                 opacities.data_ptr<float>(),
+                normals.data_ptr<float>(),
                 backgrounds.has_value() ? backgrounds.value().data_ptr<float>()
                                         : nullptr,
                 masks.has_value() ? masks.value().data_ptr<bool>() : nullptr,
@@ -442,6 +489,7 @@ call_kernel_with_dim(
                 v_render_colors.data_ptr<float>(),
                 v_render_alphas.data_ptr<float>(),
                 v_render_depths.has_value() ? v_render_depths.value().data_ptr<float>() : nullptr, // [NEW]
+                v_render_normals.data_ptr<float>(),
                 absgrad ? reinterpret_cast<vec2<float> *>(
                               v_means2d_abs.data_ptr<float>()
                           )
@@ -450,6 +498,7 @@ call_kernel_with_dim(
                 reinterpret_cast<vec3<float> *>(v_conics.data_ptr<float>()),
                 v_colors.data_ptr<float>(),
                 v_opacities.data_ptr<float>(),
+                v_normals.data_ptr<float>(),
                 means2d_z.has_value() ? v_means2d_z.data_ptr<float>() : nullptr        // [NEW]
             );
     }
@@ -460,6 +509,7 @@ call_kernel_with_dim(
         v_conics, 
         v_colors, 
         v_opacities,
+        v_normals,
         means2d_z.has_value() ? v_means2d_z : torch::Tensor() // [NEW]
     );
 }
@@ -470,6 +520,7 @@ std::tuple<
     torch::Tensor, // v_conics
     torch::Tensor, // v_colors
     torch::Tensor, // v_opacities
+    torch::Tensor, // v_normals
     torch::Tensor  // v_means2d_z (maybe empty)
 >
 rasterize_to_pixels_bwd_tensor(
@@ -478,6 +529,7 @@ rasterize_to_pixels_bwd_tensor(
     const torch::Tensor &conics,                    // [C, N, 3] or [nnz, 3]
     const torch::Tensor &colors,                    // [C, N, 3] or [nnz, 3]
     const torch::Tensor &opacities,                 // [C, N] or [nnz]
+    const torch::Tensor &normals,
     const at::optional<torch::Tensor> &backgrounds, // [C, 3]
     const at::optional<torch::Tensor> &masks, // [C, tile_height, tile_width]
     const at::optional<torch::Tensor> &means2d_z,   // [C, N] or [nnz]            // [NEW]
@@ -495,6 +547,7 @@ rasterize_to_pixels_bwd_tensor(
     const torch::Tensor &v_render_colors, // [C, image_height, image_width, 3]
     const torch::Tensor &v_render_alphas, // [C, image_height, image_width, 1]
     const at::optional<torch::Tensor> &v_render_depths,   // [C, H, W, 1]        // [NEW]
+    const torch::Tensor &v_render_normals, // [C, image_height, image_width, 3]
     // options
     bool absgrad
 ) {
@@ -509,6 +562,7 @@ rasterize_to_pixels_bwd_tensor(
             conics,                                                            \
             colors,                                                            \
             opacities,                                                         \
+            normals,                                                           \
             backgrounds,                                                       \
             masks,                                                             \
             means2d_z,           /* [NEW] */                                   \
@@ -522,6 +576,7 @@ rasterize_to_pixels_bwd_tensor(
             v_render_colors,                                                   \
             v_render_alphas,                                                   \
             v_render_depths,    /* [NEW] */                                    \
+            v_render_normals,                                                  \
             absgrad                                                            \
         );
 

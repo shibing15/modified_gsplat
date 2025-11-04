@@ -23,6 +23,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     const vec3<S> *__restrict__ conics,  // [C, N, 3] or [nnz, 3]
     const S *__restrict__ colors,      // [C, N, COLOR_DIM] or [nnz, COLOR_DIM]
     const S *__restrict__ opacities,   // [C, N] or [nnz]
+    const S *__restrict__ normals,     // [C, N, 3] or [nnz, 3]                  // The normals in camera space.
     const S *__restrict__ backgrounds, // [C, COLOR_DIM]
     const bool *__restrict__ masks,    // [C, tile_height, tile_width]
     const S *__restrict__ means2d_z,   // [C, N] or [nnz] // [NEW] 常量每高斯深度（可为 nullptr）
@@ -36,6 +37,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     S *__restrict__ render_colors, // [C, image_height, image_width, COLOR_DIM]
     S *__restrict__ render_alphas, // [C, image_height, image_width, 1]
     S *__restrict__ render_depths, // [C, image_height, image_width, 1] // [NEW] 可为 nullptr
+    S *__restrict__ render_normals, // [C, image_height, image_width, 3]
     int32_t *__restrict__ last_ids, // [C, image_height, image_width]
     S *__restrict__ visibilities // [C, N, 1] if packed is False, [nnz, 1]
 ) {
@@ -56,6 +58,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     if (render_depths != nullptr){
         render_depths += camera_id * image_height * image_width; // [NEW]
     }
+    render_normals += camera_id * image_height * image_width * 3;
     last_ids += camera_id * image_height * image_width;
     if (backgrounds != nullptr) {
         backgrounds += camera_id * COLOR_DIM;
@@ -119,6 +122,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
 
     S pix_out[COLOR_DIM] = {0.f};
     S depth_out = 0.f;
+    S normal_out[3] = {0.f};
     for (uint32_t b = 0; b < num_batches; ++b) {
         // resync all threads before beginning next batch
         // end early if entire tile is done
@@ -174,6 +178,11 @@ __global__ void rasterize_to_pixels_fwd_kernel(
             if (means2d_z != nullptr){
                 depth_out += means2d_z[g] * vis; // [NEW] 常量（每高斯）深度的期望累加
             }
+            const S *n_ptr = normals + g * 3;
+            GSPLAT_PRAGMA_UNROLL
+            for (uint32_t k = 0; k < 3; ++k) {
+                normal_out[k] += n_ptr[k] * vis;
+            }
             cur_idx = batch_start + t;
 
             T = next_T;
@@ -195,6 +204,10 @@ __global__ void rasterize_to_pixels_fwd_kernel(
         }
         // index in bin of last gaussian in this pixel
         if (render_depths != nullptr){ render_depths[pix_id] = depth_out; }
+        GSPLAT_PRAGMA_UNROLL
+        for (uint32_t k = 0; k < 3; ++k) {
+            render_normals[pix_id * 3 + k] = normal_out[k];
+        }
         last_ids[pix_id] = static_cast<int32_t>(cur_idx);
     }
 }
@@ -204,6 +217,7 @@ std::tuple<torch::Tensor,
            torch::Tensor, 
            torch::Tensor, 
            torch::Tensor,
+           torch::Tensor,
            torch::Tensor> 
 call_kernel_with_dim(
     // Gaussian parameters
@@ -211,6 +225,7 @@ call_kernel_with_dim(
     const torch::Tensor &conics,    // [C, N, 3] or [nnz, 3]
     const torch::Tensor &colors,    // [C, N, channels] or [nnz, channels]
     const torch::Tensor &opacities, // [C, N]  or [nnz]
+    const torch::Tensor &normals,   // [C, N, 3]
     const at::optional<torch::Tensor> &backgrounds, // [C, channels]
     const at::optional<torch::Tensor> &masks, // [C, tile_height, tile_width]
     const at::optional<torch::Tensor> &means2d_z,   // [C, N] or [nnz]  // [NEW]
@@ -227,6 +242,7 @@ call_kernel_with_dim(
     GSPLAT_CHECK_INPUT(conics);
     GSPLAT_CHECK_INPUT(colors);
     GSPLAT_CHECK_INPUT(opacities);
+    GSPLAT_CHECK_INPUT(normals);
     GSPLAT_CHECK_INPUT(tile_offsets);
     GSPLAT_CHECK_INPUT(flatten_ids);
     if (backgrounds.has_value()) {
@@ -266,6 +282,10 @@ call_kernel_with_dim(
             means2d.options().dtype(torch::kFloat32)
         );
     }
+    torch::Tensor render_normals = torch::empty(
+        {C, image_height, image_width, 3},
+        means2d.options().dtype(torch::kFloat32)
+    );
     torch::Tensor last_ids = torch::empty(
         {C, image_height, image_width}, means2d.options().dtype(torch::kInt32)
     );
@@ -305,6 +325,7 @@ call_kernel_with_dim(
             reinterpret_cast<vec3<float> *>(conics.data_ptr<float>()),
             colors.data_ptr<float>(),
             opacities.data_ptr<float>(),
+            normals.data_ptr<float>(),
             backgrounds.has_value() ? backgrounds.value().data_ptr<float>()
                                     : nullptr,
             masks.has_value() ? masks.value().data_ptr<bool>() : nullptr,
@@ -319,6 +340,7 @@ call_kernel_with_dim(
             renders.data_ptr<float>(),
             alphas.data_ptr<float>(),
             means2d_z.has_value() ? depths.data_ptr<float>() : nullptr, // [NEW]
+            render_normals.data_ptr<float>(),
             last_ids.data_ptr<int32_t>(),
             visibilities.data_ptr<float>()
         );
@@ -326,12 +348,14 @@ call_kernel_with_dim(
     return std::make_tuple(renders, alphas, 
                            means2d_z.has_value() ? depths
                                                 : torch::Tensor(), // 若未提供 z 则返回空 tensor
+                           render_normals,
                            last_ids, visibilities);
 }
 
 std::tuple<torch::Tensor, 
            torch::Tensor, 
            torch::Tensor, 
+           torch::Tensor,
            torch::Tensor,
            torch::Tensor> // [CHANGED] 返回多一个 depths
 rasterize_to_pixels_fwd_tensor(
@@ -340,6 +364,7 @@ rasterize_to_pixels_fwd_tensor(
     const torch::Tensor &conics,    // [C, N, 3] or [nnz, 3]
     const torch::Tensor &colors,    // [C, N, channels] or [nnz, channels]
     const torch::Tensor &opacities, // [C, N]  or [nnz]
+    const torch::Tensor &normals,
     const at::optional<torch::Tensor> &backgrounds, // [C, channels]
     const at::optional<torch::Tensor> &masks, // [C, tile_height, tile_width]
     const at::optional<torch::Tensor> &means2d_z,   // [C, N] or [nnz]  // [NEW]
@@ -361,6 +386,7 @@ rasterize_to_pixels_fwd_tensor(
             conics,                                                            \
             colors,                                                            \
             opacities,                                                         \
+            normals,                                                           \
             backgrounds,                                                       \
             masks,                                                             \
             means2d_z,                                                         \

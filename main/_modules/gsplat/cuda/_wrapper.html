@@ -858,7 +858,7 @@
         <span class="n">tile_width</span> <span class="o">*</span> <span class="n">tile_size</span> <span class="o">&gt;=</span> <span class="n">image_width</span>
     <span class="p">),</span> <span class="sa">f</span><span class="s2">&quot;Assert Failed: </span><span class="si">{</span><span class="n">tile_width</span><span class="si">}</span><span class="s2"> * </span><span class="si">{</span><span class="n">tile_size</span><span class="si">}</span><span class="s2"> &gt;= </span><span class="si">{</span><span class="n">image_width</span><span class="si">}</span><span class="s2">&quot;</span>
 
-    <span class="n">render_colors</span><span class="p">,</span> <span class="n">render_alphas</span><span class="p">,</span> <span class="n">render_depths</span> <span class="o">=</span> <span class="n">_RasterizeToPixels</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span>
+    <span class="n">render_colors</span><span class="p">,</span> <span class="n">render_alphas</span><span class="p">,</span> <span class="n">render_depths</span><span class="p">,</span> <span class="n">visibilities</span> <span class="o">=</span> <span class="n">_RasterizeToPixels</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span>
         <span class="n">means2d</span><span class="o">.</span><span class="n">contiguous</span><span class="p">(),</span>
         <span class="n">conics</span><span class="o">.</span><span class="n">contiguous</span><span class="p">(),</span>
         <span class="n">colors</span><span class="o">.</span><span class="n">contiguous</span><span class="p">(),</span>
@@ -876,7 +876,7 @@
 
     <span class="k">if</span> <span class="n">padded_channels</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">render_colors</span> <span class="o">=</span> <span class="n">render_colors</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="p">:</span><span class="o">-</span><span class="n">padded_channels</span><span class="p">]</span>
-    <span class="k">return</span> <span class="n">render_colors</span><span class="p">,</span> <span class="n">render_alphas</span><span class="p">,</span> <span class="n">render_depths</span></div>
+    <span class="k">return</span> <span class="n">render_colors</span><span class="p">,</span> <span class="n">render_alphas</span><span class="p">,</span> <span class="n">render_depths</span><span class="p">,</span> <span class="n">visibilities</span></div>
 
 
 
@@ -1233,7 +1233,7 @@
         <span class="n">flatten_ids</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [n_isects]</span>
         <span class="n">absgrad</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">Tensor</span><span class="p">]:</span>
-        <span class="n">render_colors</span><span class="p">,</span> <span class="n">render_alphas</span><span class="p">,</span> <span class="n">render_depths</span><span class="p">,</span> <span class="n">last_ids</span> <span class="o">=</span> <span class="n">_make_lazy_cuda_func</span><span class="p">(</span>
+        <span class="n">render_colors</span><span class="p">,</span> <span class="n">render_alphas</span><span class="p">,</span> <span class="n">render_depths</span><span class="p">,</span> <span class="n">last_ids</span><span class="p">,</span> <span class="n">visibilities</span> <span class="o">=</span> <span class="n">_make_lazy_cuda_func</span><span class="p">(</span>
             <span class="s2">&quot;rasterize_to_pixels_fwd&quot;</span>
         <span class="p">)(</span>
             <span class="n">means2d</span><span class="p">,</span>
@@ -1270,7 +1270,7 @@
 
         <span class="c1"># double to float</span>
         <span class="n">render_alphas</span> <span class="o">=</span> <span class="n">render_alphas</span><span class="o">.</span><span class="n">float</span><span class="p">()</span>
-        <span class="k">return</span> <span class="n">render_colors</span><span class="p">,</span> <span class="n">render_alphas</span><span class="p">,</span> <span class="n">render_depths</span>
+        <span class="k">return</span> <span class="n">render_colors</span><span class="p">,</span> <span class="n">render_alphas</span><span class="p">,</span> <span class="n">render_depths</span><span class="p">,</span> <span class="n">visibilities</span>
 
     <span class="nd">@staticmethod</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">backward</span><span class="p">(</span>
@@ -1278,6 +1278,7 @@
         <span class="n">v_render_colors</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [C, H, W, 3]</span>
         <span class="n">v_render_alphas</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [C, H, W, 1]</span>
         <span class="n">v_render_depths</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [C, H, W, 1]</span>
+        <span class="n">v_visibilities</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span>
     <span class="p">):</span>
         <span class="p">(</span>
             <span class="n">means2d</span><span class="p">,</span>

@@ -551,7 +551,7 @@ def rasterization(
                 if backgrounds is not None
                 else None
             )
-            render_colors_, render_alphas_, render_depths_ = rasterize_to_pixels(
+            render_colors_, render_alphas_, render_depths_, visibiilities = rasterize_to_pixels(
                 means2d,
                 conics,
                 colors_chunk,
@@ -573,7 +573,7 @@ def rasterization(
         render_alphas = render_alphas[0]  # discard the rest
         render_depths = render_depths[0]
     else:
-        render_colors, render_alphas, render_depths = rasterize_to_pixels(
+        render_colors, render_alphas, render_depths, visibilities = rasterize_to_pixels(
             means2d,
             conics,
             colors,
@@ -588,6 +588,11 @@ def rasterization(
             absgrad=absgrad,
             means2d_z=depths,
         )
+    meta.update(
+        {
+            "visibilities":visibilities
+        }
+    )
 
     # normalize the accumulated depth to get the expected depth
     if render_mode in ["ED", "RGB+ED", "RGB+N+ED"]:

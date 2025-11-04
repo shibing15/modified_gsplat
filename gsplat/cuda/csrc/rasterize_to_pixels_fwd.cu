@@ -36,7 +36,8 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     S *__restrict__ render_colors, // [C, image_height, image_width, COLOR_DIM]
     S *__restrict__ render_alphas, // [C, image_height, image_width, 1]
     S *__restrict__ render_depths, // [C, image_height, image_width, 1] // [NEW] 可为 nullptr
-    int32_t *__restrict__ last_ids // [C, image_height, image_width]
+    int32_t *__restrict__ last_ids, // [C, image_height, image_width]
+    S *__restrict__ visibilities // [C, N, 1] if packed is False, [nnz, 1]
 ) {
     // each thread draws one pixel, but also timeshares caching gaussians in a
     // shared tile
@@ -164,6 +165,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
 
             int32_t g = id_batch[t];
             const S vis = alpha * T;
+            gpuAtomicAdd(&visibilities[g], vis);
             const S *c_ptr = colors + g * COLOR_DIM;
             GSPLAT_PRAGMA_UNROLL
             for (uint32_t k = 0; k < COLOR_DIM; ++k) {
@@ -198,7 +200,12 @@ __global__ void rasterize_to_pixels_fwd_kernel(
 }
 
 template <uint32_t CDIM>
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> call_kernel_with_dim(
+std::tuple<torch::Tensor, 
+           torch::Tensor, 
+           torch::Tensor, 
+           torch::Tensor,
+           torch::Tensor> 
+call_kernel_with_dim(
     // Gaussian parameters
     const torch::Tensor &means2d,   // [C, N, 2] or [nnz, 2]
     const torch::Tensor &conics,    // [C, N, 3] or [nnz, 3]
@@ -262,6 +269,12 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> call_kern
     torch::Tensor last_ids = torch::empty(
         {C, image_height, image_width}, means2d.options().dtype(torch::kInt32)
     );
+    auto visibilities_sizes = means2d.sizes().vec();
+    visibilities_sizes[means2d.dim() - 1] = 1;
+    torch::Tensor visibilities = torch::zeros(
+        visibilities_sizes,
+        means2d.options().dtype(torch::kFloat32)
+    );
 
     at::cuda::CUDAStream stream = at::cuda::getCurrentCUDAStream();
     const uint32_t shared_mem =
@@ -306,16 +319,21 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> call_kern
             renders.data_ptr<float>(),
             alphas.data_ptr<float>(),
             means2d_z.has_value() ? depths.data_ptr<float>() : nullptr, // [NEW]
-            last_ids.data_ptr<int32_t>()
+            last_ids.data_ptr<int32_t>(),
+            visibilities.data_ptr<float>()
         );
 
     return std::make_tuple(renders, alphas, 
                            means2d_z.has_value() ? depths
                                                 : torch::Tensor(), // 若未提供 z 则返回空 tensor
-                           last_ids);
+                           last_ids, visibilities);
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> // [CHANGED] 返回多一个 depths
+std::tuple<torch::Tensor, 
+           torch::Tensor, 
+           torch::Tensor, 
+           torch::Tensor,
+           torch::Tensor> // [CHANGED] 返回多一个 depths
 rasterize_to_pixels_fwd_tensor(
     // Gaussian parameters
     const torch::Tensor &means2d,   // [C, N, 2] or [nnz, 2]

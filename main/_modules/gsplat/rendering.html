@@ -848,7 +848,7 @@
     <span class="k">if</span> <span class="n">colors</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">&gt;</span> <span class="n">channel_chunk</span><span class="p">:</span>
         <span class="c1"># slice into chunks</span>
         <span class="n">n_chunks</span> <span class="o">=</span> <span class="p">(</span><span class="n">colors</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">+</span> <span class="n">channel_chunk</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span> <span class="o">//</span> <span class="n">channel_chunk</span>
-        <span class="n">render_colors</span><span class="p">,</span> <span class="n">render_alphas</span> <span class="o">=</span> <span class="p">[],</span> <span class="p">[]</span>
+        <span class="n">render_colors</span><span class="p">,</span> <span class="n">render_alphas</span><span class="p">,</span> <span class="n">render_depths</span> <span class="o">=</span> <span class="p">[],</span> <span class="p">[],</span> <span class="p">[]</span>
         <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_chunks</span><span class="p">):</span>
             <span class="n">colors_chunk</span> <span class="o">=</span> <span class="n">colors</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">i</span> <span class="o">*</span> <span class="n">channel_chunk</span> <span class="p">:</span> <span class="p">(</span><span class="n">i</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">*</span> <span class="n">channel_chunk</span><span class="p">]</span>
             <span class="n">backgrounds_chunk</span> <span class="o">=</span> <span class="p">(</span>
@@ -856,7 +856,7 @@
                 <span class="k">if</span> <span class="n">backgrounds</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
                 <span class="k">else</span> <span class="kc">None</span>
             <span class="p">)</span>
-            <span class="n">render_colors_</span><span class="p">,</span> <span class="n">render_alphas_</span> <span class="o">=</span> <span class="n">rasterize_to_pixels</span><span class="p">(</span>
+            <span class="n">render_colors_</span><span class="p">,</span> <span class="n">render_alphas_</span><span class="p">,</span> <span class="n">render_depths_</span> <span class="o">=</span> <span class="n">rasterize_to_pixels</span><span class="p">(</span>
                 <span class="n">means2d</span><span class="p">,</span>
                 <span class="n">conics</span><span class="p">,</span>
                 <span class="n">colors_chunk</span><span class="p">,</span>
@@ -869,13 +869,16 @@
                 <span class="n">backgrounds</span><span class="o">=</span><span class="n">backgrounds_chunk</span><span class="p">,</span>
                 <span class="n">packed</span><span class="o">=</span><span class="n">packed</span><span class="p">,</span>
                 <span class="n">absgrad</span><span class="o">=</span><span class="n">absgrad</span><span class="p">,</span>
+                <span class="n">means2d_z</span><span class="o">=</span><span class="n">depths</span><span class="p">,</span>
             <span class="p">)</span>
             <span class="n">render_colors</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">render_colors_</span><span class="p">)</span>
             <span class="n">render_alphas</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">render_alphas_</span><span class="p">)</span>
+            <span class="n">render_depths</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">render_depths_</span><span class="p">)</span>
         <span class="n">render_colors</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cat</span><span class="p">(</span><span class="n">render_colors</span><span class="p">,</span> <span class="n">dim</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>
         <span class="n">render_alphas</span> <span class="o">=</span> <span class="n">render_alphas</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>  <span class="c1"># discard the rest</span>
+        <span class="n">render_depths</span> <span class="o">=</span> <span class="n">render_depths</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
     <span class="k">else</span><span class="p">:</span>
-        <span class="n">render_colors</span><span class="p">,</span> <span class="n">render_alphas</span> <span class="o">=</span> <span class="n">rasterize_to_pixels</span><span class="p">(</span>
+        <span class="n">render_colors</span><span class="p">,</span> <span class="n">render_alphas</span><span class="p">,</span> <span class="n">render_depths</span> <span class="o">=</span> <span class="n">rasterize_to_pixels</span><span class="p">(</span>
             <span class="n">means2d</span><span class="p">,</span>
             <span class="n">conics</span><span class="p">,</span>
             <span class="n">colors</span><span class="p">,</span>
@@ -888,13 +891,14 @@
             <span class="n">backgrounds</span><span class="o">=</span><span class="n">backgrounds</span><span class="p">,</span>
             <span class="n">packed</span><span class="o">=</span><span class="n">packed</span><span class="p">,</span>
             <span class="n">absgrad</span><span class="o">=</span><span class="n">absgrad</span><span class="p">,</span>
+            <span class="n">means2d_z</span><span class="o">=</span><span class="n">depths</span><span class="p">,</span>
         <span class="p">)</span>
 
     <span class="c1"># normalize the accumulated depth to get the expected depth</span>
     <span class="k">if</span> <span class="n">render_mode</span> <span class="ow">in</span> <span class="p">[</span><span class="s2">&quot;ED&quot;</span><span class="p">,</span> <span class="s2">&quot;RGB+ED&quot;</span><span class="p">,</span> <span class="s2">&quot;RGB+N+ED&quot;</span><span class="p">]:</span>
         <span class="n">render_colors</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">:]</span> <span class="o">/=</span> <span class="n">render_alphas</span><span class="o">.</span><span class="n">clamp</span><span class="p">(</span><span class="nb">min</span><span class="o">=</span><span class="mf">1e-10</span><span class="p">)</span>
 
-    <span class="k">return</span> <span class="n">render_colors</span><span class="p">,</span> <span class="n">render_alphas</span><span class="p">,</span> <span class="n">meta</span></div>
+    <span class="k">return</span> <span class="n">render_colors</span><span class="p">,</span> <span class="n">render_alphas</span><span class="p">,</span> <span class="n">render_depths</span><span class="p">,</span> <span class="n">meta</span></div>
 
 
 

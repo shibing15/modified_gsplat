@@ -423,6 +423,7 @@ def rasterize_to_pixels(
     flatten_ids: Tensor,  # [n_isects]
     backgrounds: Optional[Tensor] = None,  # [C, channels]
     masks: Optional[Tensor] = None,  # [C, tile_height, tile_width]
+    means2d_z: Optional[Tensor] = None,
     packed: bool = False,
     absgrad: bool = False,
 ) -> Tuple[Tensor, Tensor]:
@@ -458,6 +459,8 @@ def rasterize_to_pixels(
         assert conics.shape == (nnz, 3), conics.shape
         assert colors.shape[0] == nnz, colors.shape
         assert opacities.shape == (nnz,), opacities.shape
+        if means2d_z is not None:
+            assert means2d_z.shape == (nnz,), means2d_z.shape
     else:
         N = means2d.size(1)
         assert means2d.shape == (C, N, 2), means2d.shape
@@ -470,6 +473,9 @@ def rasterize_to_pixels(
     if masks is not None:
         assert masks.shape == isect_offsets.shape, masks.shape
         masks = masks.contiguous()
+    # if means2d_z is not None:
+    #     assert means2d_z.shape == (C, N, 1), means2d_z.shape
+    #     means2d_z = means2d_z.contiguous()
 
     # Pad the channels to the nearest supported number if necessary
     channels = colors.shape[-1]
@@ -526,13 +532,14 @@ def rasterize_to_pixels(
         tile_width * tile_size >= image_width
     ), f"Assert Failed: {tile_width} * {tile_size} >= {image_width}"
 
-    render_colors, render_alphas = _RasterizeToPixels.apply(
+    render_colors, render_alphas, render_depths = _RasterizeToPixels.apply(
         means2d.contiguous(),
         conics.contiguous(),
         colors.contiguous(),
         opacities.contiguous(),
         backgrounds,
         masks,
+        means2d_z,
         image_width,
         image_height,
         tile_size,
@@ -543,7 +550,7 @@ def rasterize_to_pixels(
 
     if padded_channels > 0:
         render_colors = render_colors[..., :-padded_channels]
-    return render_colors, render_alphas
+    return render_colors, render_alphas, render_depths
 
 
 @torch.no_grad()
@@ -888,6 +895,7 @@ class _RasterizeToPixels(torch.autograd.Function):
         opacities: Tensor,  # [C, N]
         backgrounds: Tensor,  # [C, D], Optional
         masks: Tensor,  # [C, tile_height, tile_width], Optional
+        means2d_z: Tensor, # [C, N] or [nnz] // [NEW] 常量每高斯深度（可为 nullptr）
         width: int,
         height: int,
         tile_size: int,
@@ -895,7 +903,7 @@ class _RasterizeToPixels(torch.autograd.Function):
         flatten_ids: Tensor,  # [n_isects]
         absgrad: bool,
     ) -> Tuple[Tensor, Tensor]:
-        render_colors, render_alphas, last_ids = _make_lazy_cuda_func(
+        render_colors, render_alphas, render_depths, last_ids = _make_lazy_cuda_func(
             "rasterize_to_pixels_fwd"
         )(
             means2d,
@@ -904,6 +912,7 @@ class _RasterizeToPixels(torch.autograd.Function):
             opacities,
             backgrounds,
             masks,
+            means2d_z,
             width,
             height,
             tile_size,
@@ -922,6 +931,7 @@ class _RasterizeToPixels(torch.autograd.Function):
             flatten_ids,
             render_alphas,
             last_ids,
+            means2d_z,
         )
         ctx.width = width
         ctx.height = height
@@ -930,13 +940,14 @@ class _RasterizeToPixels(torch.autograd.Function):
 
         # double to float
         render_alphas = render_alphas.float()
-        return render_colors, render_alphas
+        return render_colors, render_alphas, render_depths
 
     @staticmethod
     def backward(
         ctx,
         v_render_colors: Tensor,  # [C, H, W, 3]
         v_render_alphas: Tensor,  # [C, H, W, 1]
+        v_render_depths: Tensor,  # [C, H, W, 1]
     ):
         (
             means2d,
@@ -949,11 +960,14 @@ class _RasterizeToPixels(torch.autograd.Function):
             flatten_ids,
             render_alphas,
             last_ids,
+            means2d_z,
         ) = ctx.saved_tensors
         width = ctx.width
         height = ctx.height
         tile_size = ctx.tile_size
         absgrad = ctx.absgrad
+
+        v_render_depths.contiguous()
 
         (
             v_means2d_abs,
@@ -961,6 +975,7 @@ class _RasterizeToPixels(torch.autograd.Function):
             v_conics,
             v_colors,
             v_opacities,
+            v_means2d_z,
         ) = _make_lazy_cuda_func("rasterize_to_pixels_bwd")(
             means2d,
             conics,
@@ -968,6 +983,7 @@ class _RasterizeToPixels(torch.autograd.Function):
             opacities,
             backgrounds,
             masks,
+            means2d_z,
             width,
             height,
             tile_size,
@@ -977,6 +993,7 @@ class _RasterizeToPixels(torch.autograd.Function):
             last_ids,
             v_render_colors.contiguous(),
             v_render_alphas.contiguous(),
+            v_render_depths,
             absgrad,
         )
 
@@ -989,7 +1006,6 @@ class _RasterizeToPixels(torch.autograd.Function):
             )
         else:
             v_backgrounds = None
-
         return (
             v_means2d,
             v_conics,
@@ -997,6 +1013,7 @@ class _RasterizeToPixels(torch.autograd.Function):
             v_opacities,
             v_backgrounds,
             None,
+            v_means2d_z,
             None,
             None,
             None,

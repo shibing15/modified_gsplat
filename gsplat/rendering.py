@@ -543,7 +543,7 @@ def rasterization(
     if colors.shape[-1] > channel_chunk:
         # slice into chunks
         n_chunks = (colors.shape[-1] + channel_chunk - 1) // channel_chunk
-        render_colors, render_alphas = [], []
+        render_colors, render_alphas, render_depths = [], [], []
         for i in range(n_chunks):
             colors_chunk = colors[..., i * channel_chunk : (i + 1) * channel_chunk]
             backgrounds_chunk = (
@@ -551,7 +551,7 @@ def rasterization(
                 if backgrounds is not None
                 else None
             )
-            render_colors_, render_alphas_ = rasterize_to_pixels(
+            render_colors_, render_alphas_, render_depths_ = rasterize_to_pixels(
                 means2d,
                 conics,
                 colors_chunk,
@@ -564,13 +564,16 @@ def rasterization(
                 backgrounds=backgrounds_chunk,
                 packed=packed,
                 absgrad=absgrad,
+                means2d_z=depths,
             )
             render_colors.append(render_colors_)
             render_alphas.append(render_alphas_)
+            render_depths.append(render_depths_)
         render_colors = torch.cat(render_colors, dim=-1)
         render_alphas = render_alphas[0]  # discard the rest
+        render_depths = render_depths[0]
     else:
-        render_colors, render_alphas = rasterize_to_pixels(
+        render_colors, render_alphas, render_depths = rasterize_to_pixels(
             means2d,
             conics,
             colors,
@@ -583,13 +586,14 @@ def rasterization(
             backgrounds=backgrounds,
             packed=packed,
             absgrad=absgrad,
+            means2d_z=depths,
         )
 
     # normalize the accumulated depth to get the expected depth
     if render_mode in ["ED", "RGB+ED", "RGB+N+ED"]:
         render_colors[..., -1:] /= render_alphas.clamp(min=1e-10)
 
-    return render_colors, render_alphas, meta
+    return render_colors, render_alphas, render_depths, meta
 
 
 def _rasterization(

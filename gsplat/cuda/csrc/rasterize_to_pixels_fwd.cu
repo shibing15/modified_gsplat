@@ -25,6 +25,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     const S *__restrict__ opacities,   // [C, N] or [nnz]
     const S *__restrict__ backgrounds, // [C, COLOR_DIM]
     const bool *__restrict__ masks,    // [C, tile_height, tile_width]
+    const S *__restrict__ means2d_z,   // [C, N] or [nnz] // [NEW] 常量每高斯深度（可为 nullptr）
     const uint32_t image_width,
     const uint32_t image_height,
     const uint32_t tile_size,
@@ -34,6 +35,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     const int32_t *__restrict__ flatten_ids,  // [n_isects]
     S *__restrict__ render_colors, // [C, image_height, image_width, COLOR_DIM]
     S *__restrict__ render_alphas, // [C, image_height, image_width, 1]
+    S *__restrict__ render_depths, // [C, image_height, image_width, 1] // [NEW] 可为 nullptr
     int32_t *__restrict__ last_ids // [C, image_height, image_width]
 ) {
     // each thread draws one pixel, but also timeshares caching gaussians in a
@@ -49,6 +51,10 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     tile_offsets += camera_id * tile_height * tile_width;
     render_colors += camera_id * image_height * image_width * COLOR_DIM;
     render_alphas += camera_id * image_height * image_width;
+    // ---------------------- 变更开始 ----------------------
+    if (render_depths != nullptr){
+        render_depths += camera_id * image_height * image_width; // [NEW]
+    }
     last_ids += camera_id * image_height * image_width;
     if (backgrounds != nullptr) {
         backgrounds += camera_id * COLOR_DIM;
@@ -73,6 +79,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
             render_colors[pix_id * COLOR_DIM + k] =
                 backgrounds == nullptr ? 0.0f : backgrounds[k];
         }
+        if (render_depths != nullptr) { render_depths[pix_id] = (S)0.0f; } // NEW
         return;
     }
 
@@ -110,6 +117,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     uint32_t tr = block.thread_rank();
 
     S pix_out[COLOR_DIM] = {0.f};
+    S depth_out = 0.f;
     for (uint32_t b = 0; b < num_batches; ++b) {
         // resync all threads before beginning next batch
         // end early if entire tile is done
@@ -161,6 +169,9 @@ __global__ void rasterize_to_pixels_fwd_kernel(
             for (uint32_t k = 0; k < COLOR_DIM; ++k) {
                 pix_out[k] += c_ptr[k] * vis;
             }
+            if (means2d_z != nullptr){
+                depth_out += means2d_z[g] * vis; // [NEW] 常量（每高斯）深度的期望累加
+            }
             cur_idx = batch_start + t;
 
             T = next_T;
@@ -181,12 +192,13 @@ __global__ void rasterize_to_pixels_fwd_kernel(
                                        : (pix_out[k] + T * backgrounds[k]);
         }
         // index in bin of last gaussian in this pixel
+        if (render_depths != nullptr){ render_depths[pix_id] = depth_out; }
         last_ids[pix_id] = static_cast<int32_t>(cur_idx);
     }
 }
 
 template <uint32_t CDIM>
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> call_kernel_with_dim(
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> call_kernel_with_dim(
     // Gaussian parameters
     const torch::Tensor &means2d,   // [C, N, 2] or [nnz, 2]
     const torch::Tensor &conics,    // [C, N, 3] or [nnz, 3]
@@ -194,6 +206,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> call_kernel_with_dim(
     const torch::Tensor &opacities, // [C, N]  or [nnz]
     const at::optional<torch::Tensor> &backgrounds, // [C, channels]
     const at::optional<torch::Tensor> &masks, // [C, tile_height, tile_width]
+    const at::optional<torch::Tensor> &means2d_z,   // [C, N] or [nnz]  // [NEW]
     // image size
     const uint32_t image_width,
     const uint32_t image_height,
@@ -215,6 +228,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> call_kernel_with_dim(
     if (masks.has_value()) {
         GSPLAT_CHECK_INPUT(masks.value());
     }
+    if (means2d_z.has_value()) { GSPLAT_CHECK_INPUT(means2d_z.value()); } // [NEW]
     bool packed = means2d.dim() == 2;
 
     uint32_t C = tile_offsets.size(0);         // number of cameras
@@ -237,6 +251,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> call_kernel_with_dim(
         {C, image_height, image_width, 1},
         means2d.options().dtype(torch::kFloat32)
     );
+    // ---------------------- 变更开始 ----------------------
+    torch::Tensor depths; // [NEW]
+    if (means2d_z.has_value()) {
+        depths = torch::empty(
+            {C, image_height, image_width, 1},
+            means2d.options().dtype(torch::kFloat32)
+        );
+    }
     torch::Tensor last_ids = torch::empty(
         {C, image_height, image_width}, means2d.options().dtype(torch::kInt32)
     );
@@ -273,6 +295,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> call_kernel_with_dim(
             backgrounds.has_value() ? backgrounds.value().data_ptr<float>()
                                     : nullptr,
             masks.has_value() ? masks.value().data_ptr<bool>() : nullptr,
+            means2d_z.has_value() ? means2d_z.value().data_ptr<float>() : nullptr, // [NEW]
             image_width,
             image_height,
             tile_size,
@@ -282,13 +305,17 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> call_kernel_with_dim(
             flatten_ids.data_ptr<int32_t>(),
             renders.data_ptr<float>(),
             alphas.data_ptr<float>(),
+            means2d_z.has_value() ? depths.data_ptr<float>() : nullptr, // [NEW]
             last_ids.data_ptr<int32_t>()
         );
 
-    return std::make_tuple(renders, alphas, last_ids);
+    return std::make_tuple(renders, alphas, 
+                           means2d_z.has_value() ? depths
+                                                : torch::Tensor(), // 若未提供 z 则返回空 tensor
+                           last_ids);
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> // [CHANGED] 返回多一个 depths
 rasterize_to_pixels_fwd_tensor(
     // Gaussian parameters
     const torch::Tensor &means2d,   // [C, N, 2] or [nnz, 2]
@@ -297,6 +324,7 @@ rasterize_to_pixels_fwd_tensor(
     const torch::Tensor &opacities, // [C, N]  or [nnz]
     const at::optional<torch::Tensor> &backgrounds, // [C, channels]
     const at::optional<torch::Tensor> &masks, // [C, tile_height, tile_width]
+    const at::optional<torch::Tensor> &means2d_z,   // [C, N] or [nnz]  // [NEW]
     // image size
     const uint32_t image_width,
     const uint32_t image_height,
@@ -317,6 +345,7 @@ rasterize_to_pixels_fwd_tensor(
             opacities,                                                         \
             backgrounds,                                                       \
             masks,                                                             \
+            means2d_z,                                                         \
             image_width,                                                       \
             image_height,                                                      \
             tile_size,                                                         \

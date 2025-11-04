@@ -161,7 +161,10 @@ torch::Tensor isect_offset_encode_tensor(
     const uint32_t tile_height
 );
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, 
+           torch::Tensor, 
+           torch::Tensor,
+           torch::Tensor>
 rasterize_to_pixels_fwd_tensor(
     // Gaussian parameters
     const torch::Tensor &means2d,                   // [C, N, 2]
@@ -170,6 +173,7 @@ rasterize_to_pixels_fwd_tensor(
     const torch::Tensor &opacities,                 // [N]
     const at::optional<torch::Tensor> &backgrounds, // [C, D]
     const at::optional<torch::Tensor> &mask, // [C, tile_height, tile_width]
+    const at::optional<torch::Tensor> &means2d_z,   // [C, N] or [nnz]  // [NEW]
     // image size
     const uint32_t image_width,
     const uint32_t image_height,
@@ -184,6 +188,7 @@ std::tuple<
     torch::Tensor,
     torch::Tensor,
     torch::Tensor,
+    torch::Tensor,
     torch::Tensor>
 rasterize_to_pixels_bwd_tensor(
     // Gaussian parameters
@@ -193,6 +198,7 @@ rasterize_to_pixels_bwd_tensor(
     const torch::Tensor &opacities,                 // [N]
     const at::optional<torch::Tensor> &backgrounds, // [C, 3]
     const at::optional<torch::Tensor> &mask, // [C, tile_height, tile_width]
+    const at::optional<torch::Tensor> &means2d_z,   // [C, N] or [nnz]
     // image size
     const uint32_t image_width,
     const uint32_t image_height,
@@ -206,6 +212,7 @@ rasterize_to_pixels_bwd_tensor(
     // gradients of outputs
     const torch::Tensor &v_render_colors, // [C, image_height, image_width, 3]
     const torch::Tensor &v_render_alphas, // [C, image_height, image_width, 1]
+    const at::optional<torch::Tensor> &v_render_depths,   // [C, H, W, 1]  
     // options
     bool absgrad
 );

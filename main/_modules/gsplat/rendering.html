@@ -612,7 +612,7 @@
         <span class="n">radius_clip</span><span class="o">=</span><span class="n">radius_clip</span><span class="p">,</span>
         <span class="n">sparse_grad</span><span class="o">=</span><span class="n">sparse_grad</span><span class="p">,</span>
         <span class="n">calc_compensations</span><span class="o">=</span><span class="p">(</span><span class="n">rasterize_mode</span> <span class="o">==</span> <span class="s2">&quot;antialiased&quot;</span><span class="p">),</span>
-        <span class="n">calc_normals</span><span class="o">=</span><span class="n">render_mode</span> <span class="ow">in</span> <span class="p">[</span><span class="s2">&quot;RGB+N&quot;</span><span class="p">,</span> <span class="s2">&quot;RGB+N+D&quot;</span><span class="p">,</span> <span class="s2">&quot;RGB+N+ED&quot;</span><span class="p">],</span>
+        <span class="n">calc_normals</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
         <span class="n">ortho</span><span class="o">=</span><span class="n">ortho</span><span class="p">,</span>
     <span class="p">)</span>
 
@@ -856,7 +856,7 @@
                 <span class="k">if</span> <span class="n">backgrounds</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
                 <span class="k">else</span> <span class="kc">None</span>
             <span class="p">)</span>
-            <span class="n">render_colors_</span><span class="p">,</span> <span class="n">render_alphas_</span><span class="p">,</span> <span class="n">render_depths_</span><span class="p">,</span> <span class="n">render_normals_</span><span class="p">,</span> <span class="n">visibiilities</span> <span class="o">=</span> <span class="n">rasterize_to_pixels</span><span class="p">(</span>
+            <span class="n">render_colors_</span><span class="p">,</span> <span class="n">render_alphas_</span><span class="p">,</span> <span class="n">render_depths_</span><span class="p">,</span> <span class="n">render_normals_</span><span class="p">,</span> <span class="n">visibilities</span> <span class="o">=</span> <span class="n">rasterize_to_pixels</span><span class="p">(</span>
                 <span class="n">means2d</span><span class="p">,</span>
                 <span class="n">conics</span><span class="p">,</span>
                 <span class="n">colors_chunk</span><span class="p">,</span>
@@ -886,6 +886,7 @@
             <span class="n">conics</span><span class="p">,</span>
             <span class="n">colors</span><span class="p">,</span>
             <span class="n">opacities</span><span class="p">,</span>
+            <span class="n">normals</span><span class="p">,</span>
             <span class="n">width</span><span class="p">,</span>
             <span class="n">height</span><span class="p">,</span>
             <span class="n">tile_size</span><span class="p">,</span>

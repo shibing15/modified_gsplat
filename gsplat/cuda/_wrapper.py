@@ -990,6 +990,7 @@ class _RasterizeToPixels(torch.autograd.Function):
             conics,
             colors,
             opacities,
+            normals,
             backgrounds,
             masks,
             means2d_z,

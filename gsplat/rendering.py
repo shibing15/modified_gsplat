@@ -307,7 +307,7 @@ def rasterization(
         radius_clip=radius_clip,
         sparse_grad=sparse_grad,
         calc_compensations=(rasterize_mode == "antialiased"),
-        calc_normals=render_mode in ["RGB+N", "RGB+N+D", "RGB+N+ED"],
+        calc_normals=True,
         ortho=ortho,
     )
 
@@ -551,7 +551,7 @@ def rasterization(
                 if backgrounds is not None
                 else None
             )
-            render_colors_, render_alphas_, render_depths_, render_normals_, visibiilities = rasterize_to_pixels(
+            render_colors_, render_alphas_, render_depths_, render_normals_, visibilities = rasterize_to_pixels(
                 means2d,
                 conics,
                 colors_chunk,
@@ -581,6 +581,7 @@ def rasterization(
             conics,
             colors,
             opacities,
+            normals,
             width,
             height,
             tile_size,

@@ -1341,7 +1341,7 @@
         <span class="k">if</span> <span class="n">absgrad</span><span class="p">:</span>
             <span class="n">means2d</span><span class="o">.</span><span class="n">absgrad</span> <span class="o">=</span> <span class="n">v_means2d_abs</span>
 
-        <span class="k">if</span> <span class="n">ctx</span><span class="o">.</span><span class="n">needs_input_grad</span><span class="p">[</span><span class="mi">4</span><span class="p">]:</span>
+        <span class="k">if</span> <span class="n">ctx</span><span class="o">.</span><span class="n">needs_input_grad</span><span class="p">[</span><span class="mi">5</span><span class="p">]:</span>
             <span class="n">v_backgrounds</span> <span class="o">=</span> <span class="p">(</span><span class="n">v_render_colors</span> <span class="o">*</span> <span class="p">(</span><span class="mf">1.0</span> <span class="o">-</span> <span class="n">render_alphas</span><span class="p">)</span><span class="o">.</span><span class="n">float</span><span class="p">())</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span>
                 <span class="n">dim</span><span class="o">=</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>
             <span class="p">)</span>

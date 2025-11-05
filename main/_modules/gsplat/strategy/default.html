@@ -377,7 +377,7 @@
 
 <span class="sd">    &quot;&quot;&quot;</span>
 
-    <span class="n">prune_opa</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.005</span>
+    <span class="n">prune_opa</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.05</span>
     <span class="n">grow_grad2d</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0002</span>
     <span class="n">grow_scale3d</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.01</span>
     <span class="n">grow_scale2d</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.05</span>
@@ -388,6 +388,7 @@
     <span class="n">refine_stop_iter</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">15_000</span>
     <span class="n">reset_every</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">3000</span>
     <span class="n">refine_every</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">100</span>
+    <span class="n">num_train_data_</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4605</span>
     <span class="n">pause_refine_after_reset</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
     <span class="n">absgrad</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
     <span class="n">revised_opacity</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
@@ -406,7 +407,7 @@
         <span class="c1"># - grad2d: running accum of the norm of the image plane gradients for each GS.</span>
         <span class="c1"># - count: running accum of how many time each GS is visible.</span>
         <span class="c1"># - radii: the radii of the GSs (normalized by the image resolution).</span>
-        <span class="n">state</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;grad2d&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span> <span class="s2">&quot;count&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span> <span class="s2">&quot;scene_scale&quot;</span><span class="p">:</span> <span class="n">scene_scale</span><span class="p">}</span>
+        <span class="n">state</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;grad2d&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span> <span class="s2">&quot;count&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span> <span class="s2">&quot;scene_scale&quot;</span><span class="p">:</span> <span class="n">scene_scale</span><span class="p">,</span> <span class="s2">&quot;vis&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">}</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">refine_scale2d_stop_iter</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
             <span class="n">state</span><span class="p">[</span><span class="s2">&quot;radii&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="k">return</span> <span class="n">state</span></div>
@@ -499,6 +500,7 @@
             <span class="k">return</span>
 
         <span class="bp">self</span><span class="o">.</span><span class="n">_update_state</span><span class="p">(</span><span class="n">params</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">info</span><span class="p">,</span> <span class="n">packed</span><span class="o">=</span><span class="n">packed</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">prune_invisible_gs</span><span class="p">(</span><span class="n">params</span><span class="p">,</span> <span class="n">optimizers</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">step</span><span class="p">)</span>
 
         <span class="k">if</span> <span class="p">(</span>
             <span class="n">step</span> <span class="o">&gt;</span> <span class="bp">self</span><span class="o">.</span><span class="n">refine_start_iter</span>
@@ -564,6 +566,8 @@
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">refine_scale2d_stop_iter</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">state</span><span class="p">[</span><span class="s2">&quot;radii&quot;</span><span class="p">]</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">assert</span> <span class="s2">&quot;radii&quot;</span> <span class="ow">in</span> <span class="n">info</span><span class="p">,</span> <span class="s2">&quot;radii is required but missing.&quot;</span>
             <span class="n">state</span><span class="p">[</span><span class="s2">&quot;radii&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_gaussian</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">grads</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">state</span><span class="p">[</span><span class="s2">&quot;vis&quot;</span><span class="p">]</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">state</span><span class="p">[</span><span class="s2">&quot;vis&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_gaussian</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">grads</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
 
         <span class="c1"># update the running state</span>
         <span class="k">if</span> <span class="n">packed</span><span class="p">:</span>
@@ -578,6 +582,8 @@
             <span class="n">radii</span> <span class="o">=</span> <span class="n">info</span><span class="p">[</span><span class="s2">&quot;radii&quot;</span><span class="p">][</span><span class="n">sel</span><span class="p">]</span>  <span class="c1"># [nnz]</span>
 
         <span class="n">state</span><span class="p">[</span><span class="s2">&quot;grad2d&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">index_add_</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">gs_ids</span><span class="p">,</span> <span class="n">grads</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="n">dim</span><span class="o">=-</span><span class="mi">1</span><span class="p">))</span>
+        <span class="n">gs_vis</span> <span class="o">=</span> <span class="n">info</span><span class="p">[</span><span class="s2">&quot;visibilities&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">squeeze</span><span class="p">()</span>
+        <span class="n">state</span><span class="p">[</span><span class="s2">&quot;vis&quot;</span><span class="p">][</span><span class="n">gs_ids</span><span class="p">]</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">maximum</span><span class="p">(</span><span class="n">state</span><span class="p">[</span><span class="s2">&quot;vis&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">index_select</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">gs_ids</span><span class="p">),</span> <span class="n">gs_vis</span><span class="p">)</span>
         <span class="n">state</span><span class="p">[</span><span class="s2">&quot;count&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">index_add_</span><span class="p">(</span>
             <span class="mi">0</span><span class="p">,</span> <span class="n">gs_ids</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">ones_like</span><span class="p">(</span><span class="n">gs_ids</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
         <span class="p">)</span>
@@ -666,7 +672,23 @@
         <span class="k">if</span> <span class="n">n_prune</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
             <span class="n">remove</span><span class="p">(</span><span class="n">params</span><span class="o">=</span><span class="n">params</span><span class="p">,</span> <span class="n">optimizers</span><span class="o">=</span><span class="n">optimizers</span><span class="p">,</span> <span class="n">state</span><span class="o">=</span><span class="n">state</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">is_prune</span><span class="p">)</span>
 
-        <span class="k">return</span> <span class="n">n_prune</span></div>
+        <span class="k">return</span> <span class="n">n_prune</span>
+
+    <span class="nd">@torch</span><span class="o">.</span><span class="n">no_grad</span><span class="p">()</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">prune_invisible_gs</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">params</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Parameter</span><span class="p">],</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">ParameterDict</span><span class="p">],</span>
+        <span class="n">optimizers</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">optim</span><span class="o">.</span><span class="n">Optimizer</span><span class="p">],</span>
+        <span class="n">state</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+        <span class="n">step</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+        <span class="p">):</span>
+        <span class="k">if</span> <span class="n">step</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="p">(</span><span class="n">step</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_train_data_</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">is_prune</span> <span class="o">=</span> <span class="n">state</span><span class="p">[</span><span class="s2">&quot;vis&quot;</span><span class="p">]</span> <span class="o">&lt;</span> <span class="mf">1e-4</span>
+            <span class="n">state</span><span class="p">[</span><span class="s2">&quot;vis&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">zero_</span><span class="p">()</span>
+            <span class="n">n_prune</span> <span class="o">=</span> <span class="n">is_prune</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span><span class="o">.</span><span class="n">item</span><span class="p">()</span>
+            <span class="k">if</span> <span class="n">n_prune</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+                <span class="n">remove</span><span class="p">(</span><span class="n">params</span><span class="o">=</span><span class="n">params</span><span class="p">,</span> <span class="n">optimizers</span><span class="o">=</span><span class="n">optimizers</span><span class="p">,</span> <span class="n">state</span><span class="o">=</span><span class="n">state</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">is_prune</span><span class="p">)</span>
+                <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">Prune </span><span class="si">{</span><span class="n">n_prune</span><span class="si">}</span><span class="s2"> invisible; &quot;</span><span class="p">,</span> <span class="n">end</span><span class="o">=</span><span class="s2">&quot;&quot;</span><span class="p">)</span></div>
 
 </pre></div>
         </article>

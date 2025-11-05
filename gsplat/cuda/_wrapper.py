@@ -1011,7 +1011,7 @@ class _RasterizeToPixels(torch.autograd.Function):
         if absgrad:
             means2d.absgrad = v_means2d_abs
 
-        if ctx.needs_input_grad[4]:
+        if ctx.needs_input_grad[5]:
             v_backgrounds = (v_render_colors * (1.0 - render_alphas).float()).sum(
                 dim=(1, 2)
             )

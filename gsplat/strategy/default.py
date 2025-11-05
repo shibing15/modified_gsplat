@@ -72,7 +72,7 @@ class DefaultStrategy(Strategy):
 
     """
 
-    prune_opa: float = 0.005
+    prune_opa: float = 0.05
     grow_grad2d: float = 0.0002
     grow_scale3d: float = 0.01
     grow_scale2d: float = 0.05
@@ -83,6 +83,7 @@ class DefaultStrategy(Strategy):
     refine_stop_iter: int = 15_000
     reset_every: int = 3000
     refine_every: int = 100
+    num_train_data_: int = 4605
     pause_refine_after_reset: int = 0
     absgrad: bool = False
     revised_opacity: bool = False
@@ -99,7 +100,7 @@ class DefaultStrategy(Strategy):
         # - grad2d: running accum of the norm of the image plane gradients for each GS.
         # - count: running accum of how many time each GS is visible.
         # - radii: the radii of the GSs (normalized by the image resolution).
-        state = {"grad2d": None, "count": None, "scene_scale": scene_scale}
+        state = {"grad2d": None, "count": None, "scene_scale": scene_scale, "vis": None}
         if self.refine_scale2d_stop_iter > 0:
             state["radii"] = None
         return state
@@ -183,6 +184,7 @@ class DefaultStrategy(Strategy):
             return
 
         self._update_state(params, state, info, packed=packed)
+        self.prune_invisible_gs(params, optimizers, state, step)
 
         if (
             step > self.refine_start_iter
@@ -247,6 +249,8 @@ class DefaultStrategy(Strategy):
         if self.refine_scale2d_stop_iter > 0 and state["radii"] is None:
             assert "radii" in info, "radii is required but missing."
             state["radii"] = torch.zeros(n_gaussian, device=grads.device)
+        if state["vis"] is None:
+            state["vis"] = torch.zeros(n_gaussian, device=grads.device)
 
         # update the running state
         if packed:
@@ -261,6 +265,8 @@ class DefaultStrategy(Strategy):
             radii = info["radii"][sel]  # [nnz]
 
         state["grad2d"].index_add_(0, gs_ids, grads.norm(dim=-1))
+        gs_vis = info["visibilities"].squeeze()
+        state["vis"][gs_ids] = torch.maximum(state["vis"].index_select(0, gs_ids), gs_vis)
         state["count"].index_add_(
             0, gs_ids, torch.ones_like(gs_ids, dtype=torch.float32)
         )
@@ -350,3 +356,19 @@ class DefaultStrategy(Strategy):
             remove(params=params, optimizers=optimizers, state=state, mask=is_prune)
 
         return n_prune
+
+    @torch.no_grad()
+    def prune_invisible_gs(
+        self,
+        params: Union[Dict[str, torch.nn.Parameter], torch.nn.ParameterDict],
+        optimizers: Dict[str, torch.optim.Optimizer],
+        state: Dict[str, Any],
+        step: int,
+        ):
+        if step > 0 and (step % self.num_train_data_ - 1) == 0:
+            is_prune = state["vis"] < 1e-4
+            state["vis"].zero_()
+            n_prune = is_prune.sum().item()
+            if n_prune > 0:
+                remove(params=params, optimizers=optimizers, state=state, mask=is_prune)
+                print(f"\nPrune {n_prune} invisible; ", end="")

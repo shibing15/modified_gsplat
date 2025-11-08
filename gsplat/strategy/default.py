@@ -72,12 +72,12 @@ class DefaultStrategy(Strategy):
 
     """
 
-    prune_opa: float = 0.05
+    prune_opa: float = 0.005
     grow_grad2d: float = 0.0002
     grow_scale3d: float = 0.01
     grow_scale2d: float = 0.05
     prune_scale3d: float = 0.1
-    prune_scale2d: float = 0.15
+    prune_scale2d: float = 0.02 #source 0.15
     refine_scale2d_stop_iter: int = 0
     refine_start_iter: int = 500
     refine_stop_iter: int = 15_000
@@ -336,6 +336,8 @@ class DefaultStrategy(Strategy):
         step: int,
     ) -> int:
         is_prune = torch.sigmoid(params["opacities"].flatten()) < self.prune_opa
+        is_too_small = (torch.exp(params["scales"]).max(dim=-1).values < 1e-4)
+        is_prune = is_prune | is_too_small
         if step > self.reset_every:
             is_too_big = (
                 torch.exp(params["scales"]).max(dim=-1).values

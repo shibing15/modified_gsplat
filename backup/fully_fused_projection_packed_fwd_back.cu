@@ -14,7 +14,7 @@ namespace gsplat {
 namespace cg = cooperative_groups;
 
 /****************************************************************************
- * Projection of Gaussians (Batched) Forward Pass with Visibility Mask
+ * Projection of Gaussians (Batched) Forward Pass
  ****************************************************************************/
 
 template <typename T>
@@ -33,7 +33,6 @@ __global__ void fully_fused_projection_packed_fwd_kernel(
     const T near_plane,
     const T far_plane,
     const T radius_clip,
-    const bool *__restrict__ mask,  // [N] visibility mask
     const int32_t
         *__restrict__ block_accum, // [C * blocks_per_row] packing helper
     const bool ortho,
@@ -60,11 +59,6 @@ __global__ void fully_fused_projection_packed_fwd_kernel(
     int32_t col_idx = block_col_idx * blockDim.x + threadIdx.x; // gid
 
     bool valid = (row_idx < C) && (col_idx < N);
-
-    // 首先检查可见性mask
-    if (valid && mask != nullptr && !mask[col_idx]) {
-        valid = false;
-    }
 
     // check if points are with camera near and far plane
     vec3<T> mean_c;
@@ -303,7 +297,6 @@ fully_fused_projection_packed_fwd_tensor(
     const float near_plane,
     const float far_plane,
     const float radius_clip,
-    const at::optional<torch::Tensor> &mask,   // [N] visibility mask
     const bool calc_compensations,
     const bool calc_normals,
     const bool ortho
@@ -319,15 +312,6 @@ fully_fused_projection_packed_fwd_tensor(
     }
     GSPLAT_CHECK_INPUT(viewmats);
     GSPLAT_CHECK_INPUT(Ks);
-    
-    if (mask.has_value()) {
-        GSPLAT_CHECK_INPUT(mask.value());
-        TORCH_CHECK(mask.value().dim() == 1, "mask must be 1D tensor");
-        TORCH_CHECK(mask.value().size(0) == means.size(0), 
-                   "mask size must match number of Gaussians");
-        TORCH_CHECK(mask.value().dtype() == torch::kBool, 
-                   "mask must be bool tensor");
-    }
 
     if (calc_normals) {
         TORCH_CHECK(
@@ -369,7 +353,6 @@ fully_fused_projection_packed_fwd_tensor(
                 near_plane,
                 far_plane,
                 radius_clip,
-                mask.has_value() ? mask.value().data_ptr<bool>() : nullptr,
                 nullptr,
                 ortho,
                 block_cnts.data_ptr<int32_t>(),
@@ -429,7 +412,6 @@ fully_fused_projection_packed_fwd_tensor(
                 near_plane,
                 far_plane,
                 radius_clip,
-                mask.has_value() ? mask.value().data_ptr<bool>() : nullptr,
                 block_accum.data_ptr<int32_t>(),
                 ortho,
                 nullptr,

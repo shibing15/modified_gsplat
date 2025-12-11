@@ -50,7 +50,6 @@ def rasterization(
     channel_chunk: int = 32,
     distributed: bool = False,
     ortho: bool = False,
-    mask: Optional[Tensor] = None,  # [N] visibility mask (新增)
 ) -> Tuple[Tensor, Tensor, Dict]:
     """Rasterize a set of 3D Gaussians (N) to a batch of image planes (C).
 
@@ -186,7 +185,6 @@ def rasterization(
             the function will collaboratively render the images for all ranks.
         ortho: Whether to use orthographic projection. In such case fx and fy become the scaling
             factors to convert projected coordinates into pixel space and cx, cy become offsets.
-        mask: Optional visibility mask to filter Gaussians before projection. [N] bool tensor. Default: None.
 
     Returns:
         A tuple:
@@ -248,11 +246,6 @@ def rasterization(
         "RGB+N+D",
         "RGB+N+ED",
     ], render_mode
-    
-    # 检查mask参数
-    if mask is not None:
-        assert mask.shape == (N,), f"mask size {mask.shape} must match number of Gaussians {N}"
-        assert mask.dtype == torch.bool, f"mask must be bool tensor, got {mask.dtype}"
 
     if sh_degree is None:
         # treat colors as post-activation values, should be in shape [N, D] or [C, N, D]
@@ -316,7 +309,6 @@ def rasterization(
         calc_compensations=(rasterize_mode == "antialiased"),
         calc_normals=True,
         ortho=ortho,
-        mask=mask,  # 新增参数
     )
 
     if packed:
@@ -658,7 +650,7 @@ def _rasterization(
     )
 
     N = means.shape[0]
-    C = viewmats.shape(0)
+    C = viewmats.shape[0]
     assert means.shape == (N, 3), means.shape
     assert quats.shape == (N, 4), quats.shape
     assert scales.shape == (N, 3), scales.shape

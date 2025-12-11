@@ -184,7 +184,7 @@ class DefaultStrategy(Strategy):
             return
 
         self._update_state(params, state, info, packed=packed)
-        self.prune_invisible_gs(params, optimizers, state, step)
+        # self.prune_invisible_gs(params, optimizers, state, step)
 
         if (
             step > self.refine_start_iter
@@ -214,7 +214,7 @@ class DefaultStrategy(Strategy):
                 state["radii"].zero_()
             torch.cuda.empty_cache()
 
-        if step % self.reset_every == 0:
+        if (step % self.reset_every == 0 and step > 0):
             reset_opa(
                 params=params,
                 optimizers=optimizers,
@@ -336,8 +336,8 @@ class DefaultStrategy(Strategy):
         step: int,
     ) -> int:
         is_prune = torch.sigmoid(params["opacities"].flatten()) < self.prune_opa
-        is_too_small = (torch.exp(params["scales"]).max(dim=-1).values < 1e-4)
-        is_prune = is_prune | is_too_small
+        # is_too_small = (torch.exp(params["scales"]).max(dim=-1).values < 1e-4)
+        # is_prune = is_prune | is_too_small
         if step > self.reset_every:
             is_too_big = (
                 torch.exp(params["scales"]).max(dim=-1).values

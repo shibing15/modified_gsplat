@@ -284,7 +284,6 @@ fully_fused_projection_packed_fwd_tensor(
     const float near_plane,
     const float far_plane,
     const float radius_clip,
-    const at::optional<torch::Tensor> &mask,   // [N] visibility mask (新增)
     const bool calc_compensations,
     const bool calc_normals,
     const bool ortho
@@ -333,6 +332,6 @@ std::tuple<torch::Tensor, torch::Tensor> compute_relocation_tensor(
     const int n_max
 );
 
-} // namespace gspat
+} // namespace gsplat
 
 #endif // GSPLAT_CUDA_BINDINGS_H

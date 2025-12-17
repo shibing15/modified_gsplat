@@ -1129,7 +1129,6 @@ class _FullyFusedProjectionPacked(torch.autograd.Function):
         ctx.calc_compensations = calc_compensations
         ctx.calc_normals = calc_normals
         ctx.ortho = ortho
-        ctx.mask_present = mask is not None  # 保存mask是否存在
 
         sample_weights = torch.exp(-0.5 * randns.square().sum(-1, True))
 
@@ -1259,6 +1258,7 @@ class _FullyFusedProjectionPacked(torch.autograd.Function):
         if not ctx.needs_input_grad[4]:
             v_viewmats = None
 
+<<<<<<< HEAD
         # 返回17个梯度值，对应前向传播的17个输入参数
         return (
             v_means,      # 0: means
@@ -1278,6 +1278,25 @@ class _FullyFusedProjectionPacked(torch.autograd.Function):
             None,         # 14: calc_normals
             None,         # 15: ortho
             None,         # 16: mask (新增，不需要梯度)
+=======
+        return (
+            v_means,
+            v_covars,
+            v_quats,
+            v_scales,
+            v_viewmats,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+>>>>>>> c5efa8e
         )
 
 

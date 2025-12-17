@@ -189,6 +189,7 @@ def fully_fused_projection(
     calc_compensations: bool = False,
     calc_normals: bool = False,
     ortho: bool = False,
+    mask: Optional[Tensor] = None,  # [N] visibility mask (新增)
 ) -> List[Tensor]:
     """Projects Gaussians to 2D.
 
@@ -233,6 +234,7 @@ def fully_fused_projection(
           is useful for anti-aliasing. Default: False.
         calc_normals: If True, the normals of the projected Gaussians will be computed. Default: False.
         ortho: If True, orthographic projection will be used. Default: False.
+        mask: Optional visibility mask to filter Gaussians before projection. [N] bool tensor. Default: None.
 
     Returns:
         A tuple:
@@ -275,6 +277,12 @@ def fully_fused_projection(
         scales = scales.contiguous()
     if sparse_grad:
         assert packed, "sparse_grad is only supported when packed is True"
+    
+    # 检查mask参数
+    if mask is not None:
+        assert mask.size() == (N,), f"mask size {mask.size()} must match number of Gaussians {N}"
+        assert mask.dtype == torch.bool, f"mask must be bool tensor, got {mask.dtype}"
+        mask = mask.contiguous()
 
     viewmats = viewmats.contiguous()
     Ks = Ks.contiguous()
@@ -296,8 +304,16 @@ def fully_fused_projection(
             calc_compensations,
             calc_normals,
             ortho,
+            mask,  # 新增参数
         )
     else:
+        # 注意：非packed版本目前不支持mask
+        # 如果需要支持，需要修改对应的CUDA函数
+        warnings.warn(
+            "mask parameter is only supported in packed mode for now. "
+            "Non-packed mode will ignore the mask.",
+            UserWarning
+        )
         return _FullyFusedProjection.apply(
             means,
             covars,
@@ -1057,6 +1073,7 @@ class _FullyFusedProjectionPacked(torch.autograd.Function):
         calc_compensations: bool,
         calc_normals: bool,
         ortho: bool,
+        mask: Optional[Tensor] = None,  # [N] visibility mask (新增)
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         (
             indptr,
@@ -1083,6 +1100,7 @@ class _FullyFusedProjectionPacked(torch.autograd.Function):
             near_plane,
             far_plane,
             radius_clip,
+            mask,  # 新增参数
             calc_compensations,
             calc_normals,
             ortho,
